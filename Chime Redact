@@ -1,0 +1,253 @@
+// ==UserScript==
+// @name         Chime WebApps Redact
+// @version		 1.0
+// @description	 Deleting message in Chime conversation/group chat
+// @author       Redzal MAHDIN (redzal@)
+// @match        https://app.chime.aws/*
+// @icon         https://drive-render.corp.amazon.com/view/redzal@/TamperMonkey/ChimeRedactMessage/ChimeRedact.png
+//
+// @connect      https://midway-auth.amazon.com/
+// @connect      https://midway.amazon.com/
+// @connect      https://maxis-service-prod-pdx.amazon.com
+// @connect      amazon.com
+// @connect      https://maxis-service-prod-pdx.amazon.com/issues
+//
+// @exclude      https://app.chime.aws/meetings/*
+//
+// @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
+// @grant        GM_getResourceURL
+// @grant        GM_openInTab
+//
+// @updateURL    https://drive-render.corp.amazon.com/view/redzal@/TamperMonkey/ChimeRedactMessage/Chime%20WebApps%20Redact.user.js
+// @downloadURL  https://drive-render.corp.amazon.com/view/redzal@/TamperMonkey/ChimeRedactMessage/Chime%20WebApps%20Redact.user.js
+// ==/UserScript==
+
+/*
+REVISION HISTORY:
+0.1 - 2023-01-15 - redzal@ - First version
+0.2 - 2023-01-16 - redzal@ - Added Cancel button
+0.3 - 2023-01-22 - redzal@ - Added direct delete https://app.chime.aws & Remove redirection
+                           - Code restructuring
+                           - Button style updated
+0.4 - 2023-01-24 - redzal@ - Added http send request verification
+                           - Added Get verification ticket exist via API
+0.5 - 2023-02-14 - redzal@ - Delete button creation only on own message only
+                           - Deleted message filter refinement
+0.6 - 2023-02-24 - redzal@ - Base URI detection function updated
+0.7 - 2023-02-28 - redzal@ - Error handling added
+0.8 - 2023-03-28 - redzal@ - Update message description
+0.9 - 2023-04-11 - redzal@ - Button representation always on top
+1.0 - 2023-04-14 - redzal@ - Button representation improvement
+*/
+
+(function() {
+
+    // Create delete button
+    var MainButtonStyle="background-color: #0095ff;border: 1px solid transparent; border-radius: 2px; box-shadow: rgba(255, 255, 255, .4) 0 1px 0 0 inset; box-sizing: border-box; color: #fff; cursor: pointer; display: inline-block; font-size: 13px; font-weight: 400; line-height: 1.15385; margin: 0; outline: none; padding: 8px .8em; position: relative; text-align: center; text-decoration: none; user-select: none; -webkit-user-select: none; touch-action: manipulation; vertical-align: baseline; white-space: nowrap; z-index: 1; };";
+    var SingleDeleteButtonStyle="background-color: #EE502C;border: 1px solid transparent; border-radius: 3px; box-shadow: rgba(255, 255, 255, .4) 0 1px 0 0 inset; box-sizing: border-box; color: #fff; cursor: pointer; display: inline-block; font-size: 13px; font-weight: 400; line-height: 1.15385; margin: 0; outline: none; padding: 8px .8em; position: relative; text-align: center; text-decoration: none; user-select: none; -webkit-user-select: none; touch-action: manipulation; vertical-align: baseline; white-space: nowrap; };";
+
+// Check for classname
+    const className = '.NzIPQ0CkJXyikx8g5MD2';
+
+    var InitiateDelete = document.createElement("button");
+    InitiateDelete.id="DeleteMain";
+    InitiateDelete.innerHTML = "Delete my message";
+    InitiateDelete.setAttribute("style", MainButtonStyle);
+
+    const targetElement = document.querySelector(className);
+
+    const insertButton = () => {
+  // Find the element with the specified class
+  const targetElement = document.querySelector(className);
+
+  // If the element is found, insert the button
+  if (targetElement) {
+    targetElement.insertAdjacentElement("beforeend", InitiateDelete);
+    InitiateDelete.addEventListener("click",CreateSingleDelete,false);
+  }
+};
+
+    // Use a MutationObserver to watch for changes to the DOM
+const observer = new MutationObserver(() => {
+  // Check if the target element has been added to the DOM
+  if (document.querySelector(className)) {
+    // If the target element is found, insert the button
+    insertButton();
+
+    // Stop observing changes to the DOM
+    observer.disconnect();
+  }
+});
+
+// Start observing changes to the DOM
+observer.observe(document.body, { childList: true, subtree: true });
+
+    // function to create delete & cancel button on chat messages
+    function CreateSingleDelete(){
+        const RawChatData = document.getElementsByClassName("outgoing ChatMessage__selectableText"); // added 2023-02-14
+        const sortableList = document.getElementsByClassName("SortableList"); // added 24/02/2023 due to changes in chime webapps
+        const ChimeRoomID = sortableList[0].baseURI.split("/");
+
+        // Start: Added - 2023-01-16
+        // Create Cancel button - Added 2023-01-16
+        var CancelDelete = document.createElement("button");
+        CancelDelete.innerHTML = "Cancel";
+        CancelDelete.classList.add("deleteMsg");
+        CancelDelete.id="CancelDelete";
+        CancelDelete.setAttribute("style", MainButtonStyle);
+const IDButtonMain= document.getElementById("DeleteMain");
+        if(!document.getElementById("CancelDelete")){
+         IDButtonMain.insertAdjacentElement("afterend", CancelDelete);
+        CancelDelete.addEventListener("click",CancelDeleteFunc,false);
+        }
+        function CancelDeleteFunc(){
+            const deleteElement=document.getElementsByClassName("deleteMsg")
+            while (deleteElement.length > 0) {
+                deleteElement[0].parentNode.removeChild(deleteElement[0]);
+                // End: Added - 2023-01-16
+            }
+        }
+
+        // loop create each delete button
+        for (let i = 0; i < RawChatData.length; i++) {
+            const chimeMessageID = RawChatData[i].parentElement.dataset.messageId;
+            if(!document.getElementById("deleteMsg"+i)){
+
+                var CreateSingleDelete_button = document.createElement("button");
+                CreateSingleDelete_button.id="deleteMsg"+i;
+                CreateSingleDelete_button.classList.add("deleteMsg"); // added for collective delete
+                CreateSingleDelete_button.value=ChimeRoomID[4]+"|"+RawChatData[i].parentElement.dataset.messageId + "|" + i;
+                CreateSingleDelete_button.setAttribute("style", SingleDeleteButtonStyle);
+                CreateSingleDelete_button.innerHTML = "Delete this message";
+                RawChatData[i].appendChild(CreateSingleDelete_button)
+                CreateSingleDelete_button.addEventListener("click",DeleteAction,false);
+            }
+        }
+
+        // function to delete the selected message
+        function DeleteAction(){
+            const ChimeBtnVal = this.value.split("|");
+            const ChimeRoomIDfilter = ChimeBtnVal[0];
+            const ChimeMsgIDfilter = ChimeBtnVal[1];
+            const ChimeMsgIDCode = ChimeBtnVal[2];
+
+            //Function disabled for verification and testing
+            //console.log(ChimeRoomIDfilter);
+            //console.log(ChimeMsgIDfilter);
+            //console.log(ChimeMsgIDCode);
+            //console.log(checkDelete);
+
+            //verify if selected message is okay to be delete.
+            var stringMatchDelete = RawChatData[ChimeMsgIDCode].textContent;
+            var CheckStringDelete=stringMatchDelete.match(/(\(Deleted\))/g);
+            var assignmentFolder="c1e982a8-3cae-486c-9e88-7f090a899e1d";
+            const simBaseUrl="https://maxis-service-prod-pdx.amazon.com"
+
+            if (!CheckStringDelete){ // boolean verify if message is already deleted
+
+                if (confirm("This action is irreversible and only work for message owner only\nProceed?")) {
+
+                    // Verify if ticket existed - added 2023-01-24
+                    var VerifySim="title%3A(%22Chime+Message+Redaction+Request%22)+("+ChimeRoomIDfilter+")+("+ChimeMsgIDfilter+")&sort=lastUpdatedConversationDate+desc"
+                    try {
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url: "https://maxis-service-prod-pdx.amazon.com/issues?q="+VerifySim,
+                            onload: function (result) {
+                                try{
+                                    let ticketFound = JSON.parse(result.response).totalNumberFound;
+                                    // OnTicketExisted - added 2023-01-24
+                                    if (ticketFound > 0) {
+                                        alert ("STOP A delete request has been opened for this message, Please verify in your email or select another message");
+                                    }
+                                    // OnTicketNotExisted - added 2023-01-24
+                                    else{
+                                        // Start: Added - 2023-01-22
+
+                                        var postData = {
+                                            "assignedFolder":assignmentFolder,
+                                            "title":"Chime Message Redaction Request ",
+                                            "description":"**Are you the sender of this messages?***\non",
+                                            "descriptionContentType":"text/amz-markdown-sim",
+                                            "labels":[{"id":"61d26738-3360-4822-97e7-f9825d647a61"}],
+                                            "extensions":{"tt":{"category":"","impact":5}},
+                                            "customFields":{"string":[{"id":"discussion_id","value":ChimeRoomIDfilter},
+                                                                      {"id":"message_id","value":ChimeMsgIDfilter}]},
+                                            "autoUpgrade":{"workingHours":false}
+                                        };
+                                        try {
+                                            GM.xmlHttpRequest({
+                                                url: simBaseUrl + "/issues",
+                                                method: "POST",
+                                                data: JSON.stringify(postData),
+                                                headers: {
+                                                    "Content-Type": "application/json",
+                                                    "credentials": "include",
+                                                    "redirect": "follow"
+                                                },
+                                                onload: function(response) {
+                                                    try{
+
+                                                        console.log(response.responseText);
+                                                        // var get_info = JSON.parse(response.responseText);
+                                                        // Verify sent request status
+                                                        //OnFailed
+                                                        console.log(JSON.parse(response.responseText).status);
+
+                                                        try{
+                                                            if (response.responseText == "NOT_ANSWER") throw "No response";
+                                                            if (response.responseText.indexOf("ERRO") > -1) throw " Error on Sending";
+                                                            if (JSON.parse(response.responseText).status == "error") throw "Error connecting, Check Midway connection";
+                                                        }
+                                                        catch(errorOnSending){
+                                                            alert ("Status: "+ errorOnSending);
+                                                        }
+                                                    }catch (PostErrorConnection){
+                                                        console.log(`An unknown Sub error occured: ${PostErrorConnection}`, response);
+                                                    }
+                                                },
+                                                onerror: function(PostError) {
+                                                    alert ("Error on Sending delete request: "+ PostError);
+                                                },
+                                                ontimeout: function (PostTimeOut){
+                                                    alert ("Response post message timeout: "+ PostTimeOut);
+                                                }
+                                                // End: Added - 2023-01-22
+                                            });
+                                        }catch (PostErrorMain){
+                                            console.log(`An unknown Main error occured.`, PostErrorMain);
+                                        }
+                                    }
+                                } catch (OnloadGetErrorConnection){
+                                    console.log(`An unknown error occured: ${OnloadGetErrorConnection}`, result);
+                                }
+                            },
+                            onerror: function(GetError) {
+                                alert ("Error on Getting delete request ticket queue: "+ GetError);
+                            },
+                            ontimeout: function (GetTimeOut){
+                                alert ("Response verify timeout: "+ GetTimeOut);
+                            }
+                        });
+                    }catch (GetErrorMain){
+                        console.log(`An unknown error occured.`, GetErrorMain);
+                    }
+
+                } else {
+                    let txt = "Cancel";
+                }
+
+            } else {
+                //disabled the button
+                this.setAttribute('disabled', '');
+                alert("STOP! This message has already been deleted");
+            }
+
+
+        }
+
+    };
+
+})();
+

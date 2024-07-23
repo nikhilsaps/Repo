@@ -1,0 +1,92 @@
+// ==UserScript==
+// @name         Copy Chime room emails
+// @namespace    https://drive.corp.amazon.com/view/tholien@
+// @downloadURL  https://drive.corp.amazon.com/view/tholien@/greasemonkey/copy-chime-users.user.js
+// @updateURL    https://drive.corp.amazon.com/view/tholien@/greasemonkey/copy-chime-users.user.js
+// @version      0.4
+// @description  Copy emails for all users in a Chime room for easily migrating Chime rooms to Slack
+// @author       tholien@amazon.com
+// @match        https://app.chime.aws/*
+// @grant        GM.setClipboard
+// @grant        GM.notification
+// @grant        unsafeWindow
+// ==/UserScript==
+
+(function () {
+  function addCopyUsersButton() {
+    const copyButtonContainer = document.createElement('div');
+    copyButtonContainer.innerHTML = '<button>Copy user emails</button>';
+    copyButtonContainer.onclick = copyUsers;
+    document.body.appendChild(copyButtonContainer)
+    copyButtonContainer.style.position = 'absolute';
+    copyButtonContainer.style.top = '10%';
+    copyButtonContainer.style.right = '10%';
+  }
+
+  function notify(text) {
+    GM.notification({
+      title: 'Copy Chime',
+      text: text,
+      timeout: 2500
+    });
+  }
+
+  function copyUsers() {
+    const users = Array.prototype.map.call(
+      unsafeWindow.document.getElementsByClassName('RoomRosterListItem'),
+      (e) => e[Object.keys(e).find(k=>k.startsWith('__reactInternalInstance$'))].return.stateNode.props.email
+    );
+    if (users.length > 0) {
+      GM.setClipboard(users.join(', '));
+      notify('Copied ' + users.length + ' users');
+    } else {
+      notify('Did not find any users');
+    }
+  }
+
+  function getApp() {
+    return new Promise(resolve => {
+      const appObserver = new MutationObserver((mutations, thisObserver) => {
+        const app = document.getElementById('app');
+        if (app) {
+          resolve(app);
+          thisObserver.disconnect();
+        }
+      });
+
+      appObserver.observe(document.body, {childList: true, subtree: true});
+    });
+  }
+
+  async function main() {
+    const app = await getApp();
+
+    const observer = new MutationObserver((mutations, observer) => {
+      mutations.forEach((mutation) => {
+        for (let i = 0; i < mutation.addedNodes.length; i++) {
+          let node = mutation.addedNodes[i];
+          if (node.matches('.ChatContainer')) {
+            console.log(mutation);
+          }
+        }
+        for (let i = 0; i < mutation.removedNodes.length; i++) {
+          let node = mutation.removedNodes[i];
+          if (node.matches('.ChatContainer')) {
+            console.log(mutation);
+          }
+        }
+      });
+    });
+    observer.observe(app, {childList: true, subtree: true});
+
+  }
+
+
+  window.addEventListener('load', (event) => {
+    addCopyUsersButton();
+    main();
+  });
+
+
+}())
+

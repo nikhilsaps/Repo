@@ -1,0 +1,552 @@
+// ==UserScript==
+// @name            Chime Roster Phonetool Linker
+// @description     Add the user's phonetool info to Chime meeting roster popup
+// @author          halpenny@amazon.com
+// @namespace       halpenny@amazon.com
+// @downloadURL     https://drive-render.corp.amazon.com/view/Automotive%20Dev/javascript/greasemonkey/chime-roster-phonetool-linker.user.js
+// @updateURL       https://drive-render.corp.amazon.com/view/Automotive%20Dev/javascript/greasemonkey/chime-roster-phonetool-linker.user.js
+// @match https://app.chime.aws/meetings/*
+// @require         https://drive-render.corp.amazon.com/view/Automotive%20Dev/javascript/jslib/gm-chime-web-api.js
+// @require         https://drive-render.corp.amazon.com/view/Automotive%20Dev/javascript/jslib/airport-tz.js
+// @grant           GM.getValue
+// @grant           GM.setValue
+// @grant           GM.openInTab
+// @grant           GM.xmlHttpRequest
+// @grant           GM.registerMenuCommand
+// @version         36
+// ==/UserScript==
+
+"use strict";
+
+/* jshint esversion: 11 */
+/* globals GM,GM_ChimeVersion,GM_ChimeWebApiError,GM_ChimeUI,GM_ChimeWebApi,AIRPORT_TZ_MAP */
+
+
+let FEATURES = {};
+const NEED_MIN_VERSION = "1.0.219943.0";
+
+if (!GM_ChimeVersion.isAtLeast(NEED_MIN_VERSION))
+{
+    throw new GM_ChimeWebApiError(`This script needs Chime web version at least ${NEED_MIN_VERSION} but this version is ${GM_ChimeVersion.getRaw()}`);
+}
+
+
+function fetcher(opts)
+{
+    return new Promise((res, rej) => {
+        opts.headers = opts?.headers ?? {};
+        opts.headers.Accept = opts?.headers?.Accept ?? "*/*;";
+        opts.method = opts?.method ?? "GET";
+
+        opts.anonymous = false;
+        opts.withCredentials = true;
+        opts.sameSite = "None";
+        opts.secure = true;
+
+        opts.onload = response => {
+            if (response.status >= 200 && response.status < 300)
+            {
+                res(response);
+            }
+            else
+            {
+                rej({
+                    message: `Error (${response.status}) ${response.statusText ?? ""} retrieving ${opts.url}`,
+                    response: response,
+                });
+            }
+        };
+        opts.onerror = response => {
+            rej({
+                message: `Error (${response.status}) ${response.statusText ?? ""} retrieving ${opts.url}`,
+                response: response,
+            });
+
+        };
+
+        return GM.xmlHttpRequest(opts);
+    });
+}
+
+
+function getAirportCode(buildingRoom)
+{
+    return (buildingRoom.match(/^([A-Z]+)\d+/) ?? [])[1] ?? null;
+}
+
+
+let userId2Data = { };
+async function getUserInfo(userId)
+{
+    if (userId in userId2Data)
+        return userId2Data[userId];
+
+    let response = await fetcher({url: `https://phonetool.amazon.com/users/${userId}.json`, responseType: "json"});
+    userId2Data[userId] = response.response;
+
+    if (FEATURES.PHONETOOL_LOCALTIME)
+    {
+        let airportCode = getAirportCode(userId2Data[userId]?.building ?? "");
+        userId2Data[userId].timezone = AIRPORT_TZ_MAP[airportCode] ?? null;
+    }
+
+    return userId2Data[userId];
+}
+
+
+function buildInfoLine(lineClass, text, title = null)
+{
+    let $newEl = document.createElement("div");
+    $newEl.classList.add(lineClass);
+
+    if (text === "")
+        $newEl.innerHTML = "&nbsp;";    // force element to take up space
+    else
+        $newEl.textContent = text;
+
+    if (title !== null)
+        $newEl.title = title;
+
+    return $newEl;
+}
+
+
+function getTeam(userId)
+{
+    return getUserInfo(userId).then(userData => userData.department_name);
+}
+
+
+function getLevel(userId)
+{
+    return getUserInfo(userId).then(userData => userData.job_level);
+}
+
+
+function formatDate(date)
+{
+    return new Intl.DateTimeFormat([], {
+        weekday: "short",
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+    }).format(date);
+}
+
+
+function formatTime(date, timeZone)
+{
+    return new Intl.DateTimeFormat([], {
+        weekday: "short",
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "numeric",
+        //hour12: true,
+        timeZoneName: "short",
+        timeZone: timeZone,
+    }).format(date);
+}
+
+
+function getTenure(userId)
+{
+    // start dates are probably in Seattle timezone
+    let defaultTimezone = "-08:00";
+    return getUserInfo(userId).then(userData => {
+        return {
+            text:  userData.total_tenure_formatted,
+            hireDate: formatDate(new Date(`${userData.hire_date_iso}T00:00:00${defaultTimezone}`))
+        };
+    });
+}
+
+
+function getTimeZoneDifferenceHours(thereTimezone)
+{
+    let now = new Date();
+    let dtfopts = {
+        calendar: 'iso8601',
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: 'numeric',
+        second: 'numeric',
+        hour12: false,
+    };
+    let thereParts = Object.fromEntries(
+        new Intl.DateTimeFormat(undefined,
+            Object.assign({}, dtfopts, { timeZone: thereTimezone }))
+            .formatToParts(now)
+            .map(el => [el.type, el.value])
+        );
+    let hereParts = Object.fromEntries(
+        new Intl.DateTimeFormat(undefined,
+            dtfopts)    // no timezone needed so we get local time
+            .formatToParts(now)
+            .map(el => [el.type, el.value])
+        );
+
+    // Pretend here and there times are in UTC, then compute the difference
+    // between them.
+    let thereEpochMillis = Date.UTC(
+        thereParts.year,
+        thereParts.month - 1,
+        thereParts.day,
+        thereParts.hour,
+        thereParts.minute,
+        thereParts.second);
+
+    let hereEpochMillis = Date.UTC(
+        hereParts.year,
+        hereParts.month - 1,
+        hereParts.day,
+        hereParts.hour,
+        hereParts.minute,
+        hereParts.second);
+
+    let hoursDiff = (thereEpochMillis - hereEpochMillis) / 1000 / 60 / 60;
+
+    return hoursDiff;
+}
+
+
+function getUserTimeInfo(userId)
+{
+    return getUserInfo(userId).then(userData => {
+        if (userData.timezone !== null)
+        {
+            let hoursDiff = getTimeZoneDifferenceHours(userData.timezone);
+            return {
+                pretty: formatTime(new Date(), userData.timezone),
+                hourDiff: hoursDiff,
+                hourDiffPretty: `${hoursDiff} hours ${hoursDiff < 0 ? "behind you" : "ahead of you"}`,
+            };
+        }
+
+        return null;
+    });
+}
+
+
+function showMetaDiv(menu, text, title)
+{
+    const LOADING_DIV_CLASS = "_loading_phonetool";
+
+    text = text ?? null;
+    title = title ?? null;
+
+    menu.querySelector(`.${LOADING_DIV_CLASS}`)?.remove();
+
+    if (text === null)
+        return;
+
+    menu.insertAdjacentElement("beforeend",
+        buildInfoLine(LOADING_DIV_CLASS, text, title));
+}
+
+
+function isUserId(str)
+{
+    return str.trim().length !== 0 && !str.trim().match(/[^\p{L}]/u);    // not Unicode letters
+}
+
+
+function extractUserName(emailAddress)
+{
+    let user = emailAddress?.match(/(\S+?)@\w+/)?.[1] ?? "";
+
+    if (isUserId(user))
+        return user;
+
+    return null;
+}
+
+
+async function updateUserPopups(menu)
+{
+    let headerSection = GM_ChimeUI.getUserPopupHeaderSection(menu);
+
+    let robj = GM_ChimeWebApi.findFirstReactObjFromDom(headerSection.header,
+        el => el?.props?.hasOwnProperty("profileId"));
+    let profileId = robj?.props?.profileId;
+    let user = GM_ChimeWebApi.getUserByProfileId(profileId);
+    user = extractUserName(user?.email);
+    if (user === null)
+        return;
+
+    showMetaDiv(headerSection.datablock, "…loading info…");
+
+    // Accumulate promises to add menu rows.  Each promise needs to resolve
+    // to a return value from buildInfoLine(), or null if that row should be
+    // suppressed for whatever reason.
+    let p_userInfos = [];
+
+    if (FEATURES.PHONETOOL_LEVEL)
+    {
+        p_userInfos.push(getLevel(user)
+            .then(level => {
+                return buildInfoLine("_phonetool_level", `Level: ${level}`, "");
+            })
+        );
+    }
+
+    if (FEATURES.PHONETOOL_LOCALTIME)
+    {
+        p_userInfos.push(getUserTimeInfo(user)
+            .then(timeData => {
+                if (timeData !== null)
+                    return buildInfoLine("_phonetool_usertime", `Now: ${timeData.pretty}`, timeData.hourDiffPretty);
+
+                return null;
+            })
+        );
+    }
+
+    if (FEATURES.PHONETOOL_TEAM)
+    {
+        p_userInfos.push(getTeam(user)
+            .then(team => buildInfoLine("_phonetool_team", `Team: ${team}`, ""))
+        );
+    }
+
+    if (FEATURES.PHONETOOL_TENURE)
+    {
+        p_userInfos.push(getTenure(user)
+            .then(tenure => buildInfoLine("_phonetool_tenure", `Tenure: ${tenure.text}`, tenure.hireDate))
+        );
+    }
+
+    return Promise.all(p_userInfos).then(rows => {
+        showMetaDiv(headerSection.datablock, null);      // metadata div no longer needed
+
+        for (let $row of rows)
+        {
+            // The render for a row may have yielded nothing due to upstream
+            // reasons, so don't try to render nothing.
+            if ($row !== null)
+                headerSection.datablock.insertAdjacentElement("beforeend", $row);
+        }
+
+        // Move the popover left to accomodate the additional data if the
+        // menu would overflow the viewport.
+        let menuRect = menu.getBoundingClientRect();
+        if (menuRect.x + menuRect.width >= window.outerWidth)
+        {
+            menu.style.transform = menu.style.transform.replace(/(\d+)/,
+                window.outerWidth - menuRect.width - 5);
+        }
+    }).catch(err => {
+        let message = "Error loading phonetool";
+        let msgdata = `${err.message ? err.message : err}`;
+
+        console.error(message, err);
+        showMetaDiv(headerSection.datablock, message, `Error: ${msgdata}`);
+    });
+}
+
+
+async function toggleFeature(name)
+{
+    FEATURES[name] = !FEATURES[name];
+
+    // Make sure the new value is persisted
+    await GM.setValue(name, FEATURES[name]);
+}
+
+
+let feature2Meta = { };
+
+async function addFeature(name, menuTitle, defaultValue, order)
+{
+    // Store in global var so any other function has easy access to it
+    FEATURES[name] = await GM.getValue(name, defaultValue);
+    feature2Meta[name] = { title: menuTitle, order };
+
+    // Make sure the default or current value is always persisted
+    await GM.setValue(name, FEATURES[name]);
+}
+
+
+async function updateFeatureMenu()
+{
+    let orderedEntries = Object.entries(feature2Meta);
+    orderedEntries.sort((lhs, rhs) => lhs.order - rhs.order);
+
+    for (let [name, meta] of orderedEntries)
+    {
+        await GM.registerMenuCommand(`Toggle ${meta.title}`,
+            toggleFeature.bind(null, name));
+    }
+}
+
+
+function getMultiBadgerUrl(uids, urlSuffix = null)
+{
+    let userStr = uids.map(u => u + "@").join(",");
+    let url = new URL("https://prod.multi-badger.tools.amazon.dev/");
+    url.searchParams.set("logins", userStr);
+    if (urlSuffix !== null)
+        url.hash = urlSuffix;
+
+    return url;
+}
+
+
+function openMultiBadgerLink(attendees, presenceKey)
+{
+    let uids = attendees.map(a => {
+            // Exclude any attendee that is not internal to Amazon
+            // Worktalk account ID from https://w.amazon.com/bin/view/AmazonUC/SIGNAL/CHIME/Chime_Room_Membership_Update/
+            if (a?.workTalkAccountId !== "a6fa6e93-ab56-48c2-99ff-cd9448925bed")
+                return null;
+
+            // Exclude any attendee that doesn't have an email, since it's
+            // used to get the uid.
+            if (!a?.email || a?.email?.endsWith("app.chime.aws"))
+                return null;
+
+            return extractUserName(a.email)
+        })
+        .filter(u => u !== null);
+    let url = getMultiBadgerUrl(uids,
+        `${presenceKey}-${new Date().toISOString()}`);
+
+    GM.openInTab(url.href, {
+        active: false,
+        insert: true
+    });
+}
+
+
+function buildMultiBadgerButton(titleSuffix)
+{
+    let btn = GM_ChimeUI.createIconButton("https://prod.multi-badger.tools.amazon.dev/favicon-16x16.png", `Open tab to MultiBadger ${titleSuffix}`);
+
+    // Since the other buttons use a 24x24 image and the multibadger favicon
+    // is 16x16, we have to scale it or pad it.  We pad it so it doesn't
+    // look silly.
+    let img = GM_ChimeUI.querySelector("img", "new button icon", btn);
+    img.style = `padding-top: ${(24 - 16) / 2}px;`; // 24 is other icons' height, 16 is height of image
+
+    return btn;
+}
+
+
+function addAllAttendeeMultiBadgerButton()
+{
+    let button = document.querySelector("._phonetool-multibadger-all");
+    if (button !== null)
+        return;
+
+    button = buildMultiBadgerButton("(All attendees)");
+    button.classList.add("_phonetool-multibadger-all");
+
+    button.addEventListener("click", evt => {
+        let attendees = Object.values(GM_ChimeWebApi.getMeetingAttendeesFromRoster()).flatten(1);
+
+        openMultiBadgerLink(attendees, "all-attendees");
+
+        evt.stopImmediatePropagation();
+        evt.preventDefault();
+    });
+
+    GM_ChimeUI.addButtonToRosterHeader(button);
+}
+
+
+function updateMultibadgerButtons(rosterCell)
+{
+    let button = rosterCell.closest("div").querySelector("._phonetool-multibadger");
+    if (button)
+        return;
+
+    let presenceData = GM_ChimeUI.getAttendeePresenceHeader(rosterCell);
+    if (presenceData === null)
+        return;
+
+    button = buildMultiBadgerButton(`(${presenceData.presenceKey})`);
+    button.classList.add("_phonetool-multibadger");
+    button.dataset.presenceKey = presenceData.presenceKey;
+
+    button.addEventListener("click", evt => {
+        let presenceKey = evt.currentTarget.dataset.presenceKey;
+        let attendees = GM_ChimeWebApi.getMeetingAttendeesFromRoster();
+
+        openMultiBadgerLink(attendees[presenceKey], presenceKey);
+
+        evt.stopImmediatePropagation();
+        evt.preventDefault();
+    });
+
+    GM_ChimeUI.addButtonToAttendeeSectionHeader(button, presenceData.presenceKey);
+}
+
+
+async function main()
+{
+    await Promise.all([
+        addFeature("PHONETOOL_LEVEL", "level", true, 1),
+        addFeature("PHONETOOL_TEAM", "team", true, 3),
+        addFeature("PHONETOOL_TENURE", "tenure", true, 4),
+        addFeature("PHONETOOL_LOCALTIME", "time in local timezone", true, 6),
+        addFeature("PHONETOOL_MULTIBADGER", "multibadger link", true, 7),
+    ]);
+    await updateFeatureMenu();
+
+    let observer = new MutationObserver(mutations => {
+        for (let mut of mutations)
+        {
+            for (let node of mut.addedNodes)
+            {
+                if (!(node instanceof Element))
+                    continue;
+
+                // Check for user info popup
+                let selector = ".ch-popover-menu,.popoverMenu";
+                let $els = node.matches(selector) ?
+                    [ node ] :
+                    node.querySelectorAll(selector);
+
+                for (let $el of $els)
+                {
+                    updateUserPopups($el);
+                }
+
+                if (FEATURES.PHONETOOL_MULTIBADGER)
+                {
+                    // Check for roster type changes
+                    selector = '[data-testid="roster-cell"]';
+                    $els = node.matches(selector) ?
+                        [ node ] :
+                        node.querySelectorAll(selector);
+
+                    if ($els.length > 0)
+                    {
+                        // No need to do this every time, but saves having
+                        // another observer just to detect when the roster opens
+                        // up.  This is a no-op if the button already exists.
+                        // Note that this requires the roster to be open,
+                        // which is the only way we could have gotten here,
+                        // and we're cheating by piling this on to that.
+                        addAllAttendeeMultiBadgerButton();
+                    }
+
+                    for (let $el of $els)
+                    {
+                        updateMultibadgerButtons($el);
+                    }
+                }
+            }
+        }
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+}
+
+main();
